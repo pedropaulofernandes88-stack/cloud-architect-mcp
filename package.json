@@ -1,0 +1,48 @@
+{
+  "name": "cloud-architect-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Planejamento e provisionamento AWS por MCP stateless, com aprovação e execução durável.",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "tsx src/local.ts",
+    "approve": "tsx src/cli/approve.ts",
+    "inspect": "tsx src/cli/inspect.ts",
+    "demo": "tsx scripts/demo.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "synth": "npm run build && cdk synth --quiet",
+    "check": "npm run typecheck && npm test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "client": "tsx scripts/client.ts",
+    "pretest": "npm run build"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudformation": "3.1127.0",
+    "@aws-sdk/client-dynamodb": "3.1127.0",
+    "@aws-sdk/client-sfn": "3.1127.0",
+    "@aws-sdk/client-sts": "3.1127.0",
+    "@aws-sdk/lib-dynamodb": "3.1127.0",
+    "@aws-sdk/util-dynamodb": "3.996.9",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "aws-cdk-lib": "2.268.0",
+    "constructs": "10.8.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.163",
+    "@types/node": "24.13.3",
+    "aws-cdk": "2.1140.0",
+    "esbuild": "0.28.2",
+    "prettier": "3.9.6",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+cdk.out/
+.local/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.db
+*.db-shm
+*.db-wal
+work/

@@ -1,0 +1,7 @@
+{
+  "app": "npx tsx infra/app.ts",
+  "context": {
+    "jwtIssuer": "https://example.invalid/camcp-issuer",
+    "jwtAudience": "camcp-local-synth"
+  }
+}
