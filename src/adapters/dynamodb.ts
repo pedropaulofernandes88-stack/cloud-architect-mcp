@@ -6,11 +6,17 @@ import {
   TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 
-import type { Operation, OperationUpdate, Plan, Repository } from '../domain/contracts.js';
+import {
+  DomainError,
+  type Operation,
+  type OperationUpdate,
+  type Plan,
+  type Repository,
+} from '../domain/contracts.js';
 import { approve, applyOperationUpdate, enqueue, operationId } from '../domain/repository-rules.js';
 
 type StoredPlan = Plan & { PK: string; SK: string; kind: 'plan' };
-type StoredOperation = Operation & { PK: string; SK: string; kind: 'operation' };
+type StoredOperation = Operation & { PK: string; SK: string; kind: 'operation'; revision: number };
 type StoredApproval = {
   PK: string;
   SK: string;
@@ -36,7 +42,10 @@ export class DynamoRepository implements Repository {
     },
   ) {
     this.client =
-      options.client ?? DynamoDBDocumentClient.from(new DynamoDBClient(options.clientConfig ?? {}));
+      options.client ??
+      DynamoDBDocumentClient.from(new DynamoDBClient(options.clientConfig ?? {}), {
+        marshallOptions: { removeUndefinedValues: true },
+      });
   }
 
   async putPlan(plan: Plan): Promise<void> {
@@ -51,16 +60,21 @@ export class DynamoRepository implements Repository {
 
   async getPlan(ownerId: string, planId: string): Promise<Plan | undefined> {
     const plan = await this.getStoredPlan(ownerId, planId);
-    if (!plan || plan.status === 'QUEUED') return plan;
+    if (!plan) return undefined;
     const approval = await this.getApproval(ownerId, planId);
-    return approval?.digest === plan.digest
-      ? {
-          ...plan,
-          status: 'APPROVED',
-          approvedAt: approval.approvedAt,
-          approvedBy: approval.approvedBy,
-        }
-      : { ...plan, status: 'PLANNED', approvedAt: undefined, approvedBy: undefined };
+    const base = {
+      ...plan,
+      status: 'PLANNED' as const,
+      approvedAt: undefined,
+      approvedBy: undefined,
+    };
+    if (!isValidApproval(approval, plan)) return base;
+    return {
+      ...base,
+      status: plan.status === 'QUEUED' ? 'QUEUED' : 'APPROVED',
+      approvedAt: approval.approvedAt,
+      approvedBy: approval.approvedBy,
+    };
   }
 
   private async getStoredPlan(ownerId: string, planId: string): Promise<Plan | undefined> {
@@ -82,6 +96,13 @@ export class DynamoRepository implements Repository {
     at: string,
   ): Promise<Plan> {
     for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt += 1) {
+      const stored = await this.getStoredPlan(ownerId, planId);
+      if (stored?.status === 'QUEUED') {
+        throw new DomainError(
+          'CONFLICT',
+          'O plano já possui uma operação ou estado de fila inválido.',
+        );
+      }
       const current = await this.getPlan(ownerId, planId);
       const next = approve(current, digest, approvedBy, at);
       if (next === current || next.status === current?.status) return next;
@@ -194,17 +215,26 @@ export class DynamoRepository implements Repository {
   ): Promise<void> {
     for (let attempt = 0; attempt < MAX_CONFLICT_RETRIES; attempt += 1) {
       const current = await this.getOperation(ownerId, operationIdValue);
-      if (!current) return;
+      if (!current) throw new DomainError('NOT_FOUND', 'Operação não encontrada.');
       const next = applyOperationUpdate(current, update);
       if (next === current) return;
       try {
         await this.client.send(
           new PutCommand({
             TableName: this.options.tableName,
-            Item: this.operationItem(next),
-            ConditionExpression: '#status = :currentStatus',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: { ':currentStatus': current.status },
+            Item: this.operationItem(next, revisionOf(current) + 1),
+            ConditionExpression:
+              '#status = :currentStatus AND #updatedAt = :currentUpdatedAt AND #revision = :revision',
+            ExpressionAttributeNames: {
+              '#status': 'status',
+              '#updatedAt': 'updatedAt',
+              '#revision': 'revision',
+            },
+            ExpressionAttributeValues: {
+              ':currentStatus': current.status,
+              ':currentUpdatedAt': current.updatedAt,
+              ':revision': revisionOf(current),
+            },
           }),
         );
         return;
@@ -242,11 +272,12 @@ export class DynamoRepository implements Repository {
     return { ...plan, ...this.planKey(plan.ownerId, plan.id), kind: 'plan' };
   }
 
-  private operationItem(operation: Operation): StoredOperation {
+  private operationItem(operation: Operation, revision = revisionOf(operation)): StoredOperation {
     return {
       ...operation,
       ...this.operationKey(operation.ownerId, operation.id),
       kind: 'operation',
+      revision,
     };
   }
 
@@ -256,9 +287,29 @@ export class DynamoRepository implements Repository {
   }
 
   private fromOperation(item: StoredOperation): Operation {
-    const { PK: _pk, SK: _sk, kind: _kind, ...operation } = item;
-    return operation;
+    const { PK: _pk, SK: _sk, kind: _kind, revision, ...operation } = item;
+    return Object.defineProperty(operation, '__revision', { value: revision, enumerable: false });
   }
+}
+
+function revisionOf(operation: Operation): number {
+  const value = (operation as Operation & { __revision?: unknown }).__revision;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function isValidApproval(
+  approval: StoredApproval | undefined,
+  plan: Plan,
+): approval is StoredApproval {
+  return (
+    approval?.kind === 'approval' &&
+    approval.planId === plan.id &&
+    approval.digest === plan.digest &&
+    typeof approval.approvedAt === 'string' &&
+    approval.approvedAt.length > 0 &&
+    typeof approval.approvedBy === 'string' &&
+    approval.approvedBy.length > 0
+  );
 }
 
 function isConditionalFailure(error: unknown): boolean {

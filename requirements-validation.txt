@@ -1,0 +1,2 @@
+# Ferramenta opcional de validação, sem uso no runtime Lambda.
+cfn-lint==1.56.0

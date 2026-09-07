@@ -259,7 +259,7 @@ export class CloudArchitectMcpStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DispatcherFailureQueueUrl', { value: failureQueue.queueUrl });
     new cdk.CfnOutput(this, 'ApprovalsIamNote', {
       value:
-        'A aprovação é executada pela CLI administrativa com IAM da tabela; a Lambda MCP não recebe dynamodb:UpdateItem.',
+        'A aprovação é um registro imutável APPROVAL#owner criado pela CLI administrativa; a Lambda MCP só faz UpdateItem transacional do plano, condicionado a essa aprovação.',
     });
     new cdk.CfnOutput(this, 'DispatcherRecoveryNote', {
       value:

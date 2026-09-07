@@ -18,6 +18,12 @@ export const applyInputSchema = z
   })
   .strict();
 
+export const getPlanInputSchema = z
+  .object({
+    planId: z.string().regex(/^pln-[0-9a-f-]{36}$/i, 'planId inválido'),
+  })
+  .strict();
+
 export const statusInputSchema = z
   .object({
     operationId: z.string().regex(/^op-[a-f0-9]{48}$/, 'operationId inválido'),

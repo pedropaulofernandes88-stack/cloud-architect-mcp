@@ -13,7 +13,7 @@ const endpoint = createMcpEndpoint(
   LOCAL_PRINCIPAL,
 );
 const client = new Client(
-  { name: 'cloud-architect-demo', version: '0.1.0' },
+  { name: 'cloud-architect-demo', version: '0.2.0' },
   { versionNegotiation: { mode: 'auto' } },
 );
 try {

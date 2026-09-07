@@ -1,8 +1,20 @@
 import { randomUUID } from 'node:crypto';
 
-import { DomainError, type Principal, type Repository } from './contracts.js';
+import {
+  DomainError,
+  type Plan,
+  type PlanValidation,
+  type Principal,
+  type Repository,
+} from './contracts.js';
 import { CATALOG, createPlan } from './planner.js';
-import { applyInputSchema, architectureInputSchema, statusInputSchema } from './schemas.js';
+import { planDigest } from './repository-rules.js';
+import {
+  applyInputSchema,
+  architectureInputSchema,
+  getPlanInputSchema,
+  statusInputSchema,
+} from './schemas.js';
 
 export class ArchitectureService {
   constructor(
@@ -18,6 +30,51 @@ export class ArchitectureService {
   catalog(principal: Principal) {
     this.requireScope(principal, 'architecture:read');
     return CATALOG;
+  }
+
+  async getPlan(principal: Principal, input: unknown): Promise<Plan> {
+    this.requireScope(principal, 'architecture:read');
+    const parsed = getPlanInputSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new DomainError(
+        'INVALID_INPUT',
+        parsed.error.issues[0]?.message ?? 'Entrada inválida.',
+      );
+    }
+    const plan = await this.repository.getPlan(principal.ownerId, parsed.data.planId);
+    if (!plan) throw new DomainError('NOT_FOUND', 'Plano não encontrado.');
+    return plan;
+  }
+
+  async validatePlan(principal: Principal, input: unknown): Promise<PlanValidation> {
+    const plan = await this.getPlan(principal, input);
+    const now = (this.options.now ?? (() => new Date()))();
+    const expiry = Date.parse(plan.expiresAt);
+    const checks = {
+      integrity: plan.digest === planDigest(plan),
+      notExpired: Number.isFinite(expiry) && expiry > now.getTime(),
+      approved:
+        (plan.status === 'APPROVED' || plan.status === 'QUEUED') &&
+        typeof plan.approvedAt === 'string' &&
+        plan.approvedAt.length > 0 &&
+        typeof plan.approvedBy === 'string' &&
+        plan.approvedBy.length > 0,
+      notQueued: plan.status !== 'QUEUED',
+    };
+    const reasons: string[] = [];
+    if (!checks.integrity) reasons.push('O digest não corresponde ao conteúdo do plano.');
+    if (!checks.notExpired) reasons.push('O plano expirou.');
+    if (!checks.approved) reasons.push('O plano não possui aprovação administrativa registrada.');
+    if (!checks.notQueued) reasons.push('O plano já possui uma operação enfileirada.');
+    return {
+      planId: plan.id,
+      digest: plan.digest,
+      status: plan.status,
+      readyToApply: reasons.length === 0,
+      checks,
+      reasons,
+      ...(plan.operationId ? { operationId: plan.operationId } : {}),
+    };
   }
 
   async plan(principal: Principal, input: unknown) {

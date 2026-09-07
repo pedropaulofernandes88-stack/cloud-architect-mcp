@@ -1,4 +1,4 @@
-# Cloud Architect MCP
+# Cloud Architect MCP · 0.2.0
 
 Servidor MCP stateless para gerar planos AWS revisáveis e provisionar recursos após aprovação administrativa. Implementado em TypeScript, com o SDK oficial MCP v2 e protocolo **2026-07-28**.
 
@@ -12,6 +12,10 @@ O projeto tem um modo local executável sem conta AWS e infraestrutura CDK para 
 | `plan_architecture`  | Template CloudFormation, resumo, proprietário, validade e digest SHA-256 | `architecture:plan`  |
 | `apply_architecture` | Operação persistida para um plano aprovado                               | `architecture:apply` |
 | `get_operation`      | Estado, resultado e identificadores da implantação                       | `architecture:read`  |
+| `get_plan`           | Recupera um plano persistido entre chamadas                              | `architecture:read`  |
+| `validate_plan`      | Verifica integridade, validade, aprovação e prontidão local              | `architecture:read`  |
+
+`validate_plan` não consulta preços, quotas, IAM ou CloudFormation.
 
 Blueprints disponíveis:
 
@@ -21,6 +25,8 @@ Blueprints disponíveis:
 Os recursos são retidos na remoção da stack. Isso preserva dados e também pode manter custos. O MVP cria novas stacks; atualização, exclusão, estimativa de custos, código arbitrário e templates enviados pelo cliente não fazem parte deste recorte.
 
 O modelo de linguagem fica no cliente MCP: ele escolhe o blueprint e preenche parâmetros estruturados. O servidor não precisa de uma chave de API de LLM e não transforma texto livre em infraestrutura irrestrita.
+
+Veja [o guia de uso e aplicações](docs/usage.md) para um exemplo completo em linguagem simples.
 
 ## Executar localmente
 
@@ -99,6 +105,19 @@ npm audit --omit=dev
 ```
 
 A CI executa verificação de tipos, testes, build, formatação, síntese e auditoria de dependências. Testes com clientes MCP e SQLite são reais; os adaptadores AWS são exercitados com respostas controladas do SDK. Uma implantação sandbox continua necessária para validar IAM, authorizer, streams e provisionamento no serviço AWS real.
+
+Para verificar os schemas CloudFormation, instale a ferramenta opcional em um ambiente Python separado:
+
+```sh
+python -m pip install -r requirements-validation.txt
+npm run export:templates
+cfn-lint -t .local/templates/*.json
+cfn-lint -i W3005 -t cdk.out/CloudArchitectMcpStack.template.json
+```
+
+Somente o template gerado pelo CDK ignora `W3005`: o CDK inclui dependências explícitas de roles que já são impostas por `GetAtt`. As demais verificações permanecem ativas.
+
+Autorização remota: o cliente de exemplo usa um bearer token de acesso existente. O HTTP API rejeita tokens inválidos antes de invocar a Lambda, portanto essas respostas padrão não incluem o `WWW-Authenticate` montado pela aplicação. A descoberta automática completa de autorização exige configuração adicional no gateway/cliente; os metadados do recurso também são servidos na rota pública documentada.
 
 ## Estrutura
 

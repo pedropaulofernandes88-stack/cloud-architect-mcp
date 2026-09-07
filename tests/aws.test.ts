@@ -128,8 +128,9 @@ describe('AWS adapters', () => {
 
   it('worker só cria a stack com template do plano autorizado e recursos permitidos', async () => {
     const repository = new MemoryRepository();
-    const approved = plan('APPROVED');
+    const approved = plan('PLANNED');
     await repository.putPlan(approved);
+    await repository.approvePlan('owner', approved.id, approved.digest, 'admin', now);
     const operation = await repository.enqueueOperation(
       'owner',
       approved.id,
@@ -141,6 +142,7 @@ describe('AWS adapters', () => {
     const worker = createWorker({
       repository,
       executionRoleArn: 'arn:aws:iam::111111111111:role/camcp-execution',
+      region: 'sa-east-1',
       cloudFormation: {
         send: async (command: unknown) => {
           commands.push(command);
@@ -160,8 +162,9 @@ describe('AWS adapters', () => {
 
   it('recupera uma criação cujo retorno se perdeu somente quando a tag pertence à operação', async () => {
     const repository = new MemoryRepository();
-    const approved = plan('APPROVED');
+    const approved = plan('PLANNED');
     await repository.putPlan(approved);
+    await repository.approvePlan('owner', approved.id, approved.digest, 'admin', now);
     const operation = await repository.enqueueOperation(
       'owner',
       approved.id,
@@ -172,6 +175,7 @@ describe('AWS adapters', () => {
     const worker = createWorker({
       repository,
       executionRoleArn: 'role',
+      region: 'sa-east-1',
       cloudFormation: {
         send: async (command: unknown) => {
           if (command instanceof CreateStackCommand)
@@ -189,6 +193,7 @@ describe('AWS adapters', () => {
           throw new Error('comando inesperado');
         },
       },
+      now: () => new Date(now),
     });
     await expect(
       worker({ action: 'start', ownerId: 'owner', operationId: operation.id }),
@@ -215,6 +220,7 @@ describe('AWS adapters', () => {
     const worker = createWorker({
       repository,
       executionRoleArn: 'role',
+      now: () => new Date(now),
       cloudFormation: {
         send: async (command: unknown) => {
           expect(command).toBeInstanceOf(DescribeStacksCommand);
@@ -228,5 +234,110 @@ describe('AWS adapters', () => {
     });
     const result = await worker({ action: 'poll', ownerId: 'owner', operationId: queued.id });
     expect(result.status).toBe('FAILED');
+    expect(result.message).toBe('bad');
+  });
+
+  it('não confia em status QUEUED gravado sem o item de aprovação', async () => {
+    const repository = new DynamoRepository({
+      tableName: 'operations',
+      client: {
+        send: async (command: unknown) => {
+          if (command instanceof GetCommand && command.input.Key?.PK === 'OWNER#owner') {
+            return {
+              Item: {
+                ...plan('QUEUED'),
+                operationId: 'op-injected',
+                approvedAt: now,
+                approvedBy: 'forjado',
+                PK: 'OWNER#owner',
+                SK: `PLAN#${plan().id}`,
+                kind: 'plan',
+              },
+            };
+          }
+          return {};
+        },
+      },
+    });
+    await expect(repository.getPlan('owner', plan().id)).resolves.toMatchObject({
+      status: 'PLANNED',
+      approvedAt: undefined,
+      approvedBy: undefined,
+    });
+  });
+
+  it('bloqueia uma operação injetada com plano QUEUED sem aprovação real', async () => {
+    const queuedPlan = {
+      ...plan('QUEUED'),
+      operationId: 'op-injected',
+      approvedAt: undefined,
+      approvedBy: undefined,
+    };
+    const injected: import('../src/domain/contracts.js').Operation = {
+      id: 'op-injected',
+      ownerId: 'owner',
+      planId: queuedPlan.id,
+      planDigest: queuedPlan.digest,
+      stackName: queuedPlan.stackName,
+      createdAt: now,
+      updatedAt: now,
+      status: 'PENDING',
+    };
+    let updated: import('../src/domain/contracts.js').Operation | undefined;
+    const repository: import('../src/domain/contracts.js').Repository = {
+      putPlan: async () => undefined,
+      getPlan: async () => queuedPlan,
+      approvePlan: async () => queuedPlan,
+      enqueueOperation: async () => injected,
+      getOperation: async () => updated ?? injected,
+      updateOperation: async (_owner, _id, update) => {
+        updated = { ...injected, ...update };
+      },
+    };
+    const worker = createWorker({
+      repository,
+      executionRoleArn: 'role',
+      region: 'sa-east-1',
+      now: () => new Date(now),
+      cloudFormation: {
+        send: async () => {
+          throw new Error('CloudFormation não deveria ser chamado');
+        },
+      },
+    });
+    await expect(
+      worker({ action: 'start', ownerId: 'owner', operationId: injected.id }),
+    ).resolves.toMatchObject({ status: 'FAILED' });
+  });
+
+  it('marca deadline antes de consultar CloudFormation', async () => {
+    const repository = new MemoryRepository();
+    const approved = plan('APPROVED');
+    await repository.putPlan(approved);
+    const operation = await repository.enqueueOperation(
+      'owner',
+      approved.id,
+      approved.digest,
+      'deadline',
+      now,
+    );
+    await repository.updateOperation('owner', operation.id, {
+      status: 'RUNNING',
+      updatedAt: now,
+      stackId: 'stack-id',
+    });
+    const worker = createWorker({
+      repository,
+      executionRoleArn: 'role',
+      now: () => new Date('2026-09-07T13:00:00.000Z'),
+      cloudFormation: {
+        send: async () => {
+          throw new Error('não deve descrever');
+        },
+      },
+    });
+    await expect(
+      worker({ action: 'poll', ownerId: 'owner', operationId: operation.id }),
+    ).resolves.toMatchObject({ status: 'FAILED', message: expect.stringContaining('55 minutos') });
   });
 });

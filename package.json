@@ -1,6 +1,6 @@
 {
   "name": "cloud-architect-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Planejamento e provisionamento AWS por MCP stateless, com aprovação e execução durável.",
   "type": "module",
@@ -20,7 +20,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "client": "tsx scripts/client.ts",
-    "pretest": "npm run build"
+    "pretest": "npm run build",
+    "export:templates": "tsx scripts/export-templates.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1127.0",

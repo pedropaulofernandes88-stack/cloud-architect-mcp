@@ -6,7 +6,14 @@ const { values } = parseArgs({
   options: { tool: { type: 'string' }, input: { type: 'string' } },
   strict: true,
 });
-const supported = ['list_blueprints', 'plan_architecture', 'apply_architecture', 'get_operation'];
+const supported = [
+  'list_blueprints',
+  'plan_architecture',
+  'get_plan',
+  'validate_plan',
+  'apply_architecture',
+  'get_operation',
+];
 if (!values.tool || !supported.includes(values.tool))
   throw new Error(
     `Use --tool ${supported.join(' | ')} e, quando necessário, --input <arquivo.json>.`,
@@ -21,7 +28,7 @@ const input: unknown = values.input ? JSON.parse(await readFile(values.input, 'u
 if (!input || typeof input !== 'object' || Array.isArray(input))
   throw new Error('O arquivo de argumentos deve conter um objeto JSON.');
 const client = new Client(
-  { name: 'cloud-architect-cli', version: '0.1.0' },
+  { name: 'cloud-architect-cli', version: '0.2.0' },
   { versionNegotiation: { mode: 'auto' } },
 );
 try {

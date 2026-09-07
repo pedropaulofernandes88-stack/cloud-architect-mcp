@@ -4,9 +4,14 @@ import * as z from 'zod/v4';
 import type { Principal } from './domain/contracts.js';
 import { DomainError } from './domain/contracts.js';
 import { ArchitectureService } from './domain/service.js';
-import { applyInputSchema, architectureInputSchema, statusInputSchema } from './domain/schemas.js';
+import {
+  applyInputSchema,
+  architectureInputSchema,
+  getPlanInputSchema,
+  statusInputSchema,
+} from './domain/schemas.js';
 
-const serverInfo = { name: 'cloud-architect-mcp', version: '0.1.0' };
+const serverInfo = { name: 'cloud-architect-mcp', version: '0.2.0' };
 
 export function createMcpEndpoint(service: ArchitectureService, principal: Principal) {
   return createMcpHandler(
@@ -33,6 +38,29 @@ export function createMcpEndpoint(service: ArchitectureService, principal: Princ
           inputSchema: architectureInputSchema,
         },
         async (input) => execute(() => service.plan(principal, input)),
+      );
+
+      server.registerTool(
+        'get_plan',
+        {
+          title: 'Consultar plano',
+          description: 'Recupera um plano de arquitetura pertencente ao solicitante.',
+          inputSchema: getPlanInputSchema,
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        async (input) => execute(() => service.getPlan(principal, input)),
+      );
+
+      server.registerTool(
+        'validate_plan',
+        {
+          title: 'Validar prontidão local do plano',
+          description:
+            'Verifica localmente integridade, expiração, aprovação administrativa e fila. Não comprova disponibilidade do provedor, permissões IAM ou custo.',
+          inputSchema: getPlanInputSchema,
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        async (input) => execute(() => service.validatePlan(principal, input)),
       );
 
       server.registerTool(

@@ -49,7 +49,7 @@ async function modernClient(
 }
 
 describe('MCP 2026-07-28', () => {
-  it('usa o cliente v2 sem initialize/sessão e expõe somente as quatro ferramentas', async () => {
+  it('usa o cliente v2 sem initialize/sessão e expõe as ferramentas do servidor', async () => {
     const seenRequests: Request[] = [];
     const client = await modernClient(createMcpEndpoint(service(), fullPrincipal), seenRequests);
 
@@ -58,12 +58,18 @@ describe('MCP 2026-07-28', () => {
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'apply_architecture',
       'get_operation',
+      'get_plan',
       'list_blueprints',
       'plan_architecture',
+      'validate_plan',
     ]);
     expect(
       tools.tools.find((tool) => tool.name === 'list_blueprints')?.annotations?.readOnlyHint,
     ).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === 'validate_plan')?.annotations).toMatchObject({
+      readOnlyHint: true,
+      idempotentHint: true,
+    });
     expect(seenRequests.some((request) => request.headers.has('mcp-session-id'))).toBe(false);
     expect(seenRequests.some((request) => request.headers.get('mcp-method') === 'initialize')).toBe(
       false,
@@ -163,6 +169,99 @@ describe('MCP 2026-07-28', () => {
     const forbidden = await readOnly.callTool({
       name: 'plan_architecture',
       arguments: { name: 'app-storage', blueprint: 'storage', environment: 'dev' },
+    });
+    expect(forbidden.isError).toBe(true);
+    expect(forbidden.content).toMatchObject([
+      { type: 'text', text: expect.stringContaining('FORBIDDEN') },
+    ]);
+  });
+
+  it('recupera e valida um plano em outro endpoint sem sessão', async () => {
+    const repository = new MemoryRepository();
+    const serviceInstance = service(repository);
+    const planner = await modernClient(createMcpEndpoint(serviceInstance, fullPrincipal));
+    const planned = await planner.callTool({
+      name: 'plan_architecture',
+      arguments: { name: 'ready-storage', blueprint: 'storage', environment: 'dev' },
+    });
+    const plan = planned.structuredContent as { id: string; digest: string; ownerId: string };
+
+    const reader = await modernClient(createMcpEndpoint(serviceInstance, fullPrincipal));
+    const recovered = await reader.callTool({ name: 'get_plan', arguments: { planId: plan.id } });
+    expect(recovered.structuredContent).toMatchObject({
+      id: plan.id,
+      digest: plan.digest,
+      ownerId: plan.ownerId,
+    });
+
+    const beforeApproval = await reader.callTool({
+      name: 'validate_plan',
+      arguments: { planId: plan.id },
+    });
+    expect(beforeApproval.structuredContent).toMatchObject({
+      readyToApply: false,
+      checks: { integrity: true, notExpired: true, approved: false, notQueued: true },
+    });
+
+    await repository.approvePlan(
+      fullPrincipal.ownerId,
+      plan.id,
+      plan.digest,
+      'admin-identity',
+      '2026-09-07T00:00:00.000Z',
+    );
+    const afterApproval = await reader.callTool({
+      name: 'validate_plan',
+      arguments: { planId: plan.id },
+    });
+    expect(afterApproval.structuredContent).toMatchObject({
+      readyToApply: true,
+      checks: { integrity: true, notExpired: true, approved: true, notQueued: true },
+    });
+
+    await planner.callTool({
+      name: 'apply_architecture',
+      arguments: { planId: plan.id, digest: plan.digest, idempotencyKey: 'ready-plan-apply' },
+    });
+    const afterApply = await reader.callTool({
+      name: 'validate_plan',
+      arguments: { planId: plan.id },
+    });
+    expect(afterApply.structuredContent).toMatchObject({
+      readyToApply: false,
+      status: 'QUEUED',
+      checks: { approved: true, notQueued: false },
+    });
+  });
+
+  it('não revela planos para outro proprietário e exige escopo de leitura', async () => {
+    const repository = new MemoryRepository();
+    const serviceInstance = service(repository);
+    const ownerA = await modernClient(createMcpEndpoint(serviceInstance, fullPrincipal));
+    const planned = await ownerA.callTool({
+      name: 'plan_architecture',
+      arguments: { name: 'private-storage', blueprint: 'storage', environment: 'dev' },
+    });
+    const plan = planned.structuredContent as { id: string };
+
+    const ownerB = await modernClient(
+      createMcpEndpoint(serviceInstance, { ownerId: 'owner-b', scopes: ['architecture:read'] }),
+    );
+    const foreign = await ownerB.callTool({ name: 'get_plan', arguments: { planId: plan.id } });
+    expect(foreign.isError).toBe(true);
+    expect(foreign.content).toMatchObject([
+      { type: 'text', text: expect.stringContaining('NOT_FOUND') },
+    ]);
+
+    const noReadScope = await modernClient(
+      createMcpEndpoint(serviceInstance, {
+        ownerId: fullPrincipal.ownerId,
+        scopes: ['architecture:plan'],
+      }),
+    );
+    const forbidden = await noReadScope.callTool({
+      name: 'validate_plan',
+      arguments: { planId: plan.id },
     });
     expect(forbidden.isError).toBe(true);
     expect(forbidden.content).toMatchObject([

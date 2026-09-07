@@ -23,6 +23,8 @@ export interface WorkerOptions {
   repository: Repository;
   cloudFormation?: CloudFormation;
   executionRoleArn: string;
+  now?: () => Date;
+  region?: string;
 }
 
 const RESOURCE_TYPES = ['AWS::S3::Bucket', 'AWS::SQS::Queue', 'AWS::DynamoDB::Table'];
@@ -30,15 +32,24 @@ const WORKFLOW_DEADLINE_MS = 55 * 60 * 1000;
 
 export function createWorker(options: WorkerOptions) {
   const cloudFormation = options.cloudFormation ?? new CloudFormationClient({});
+  const now = options.now ?? (() => new Date());
+  const region = options.region ?? process.env.AWS_REGION;
   return async (event: WorkerEvent): Promise<Operation> => {
     assertEvent(event);
     switch (event.action) {
       case 'start':
-        return start(options.repository, cloudFormation, options.executionRoleArn, event);
+        return start(
+          options.repository,
+          cloudFormation,
+          options.executionRoleArn,
+          now,
+          region,
+          event,
+        );
       case 'poll':
-        return poll(options.repository, cloudFormation, event);
+        return poll(options.repository, cloudFormation, now, event);
       case 'fail':
-        return fail(options.repository, event);
+        return fail(options.repository, now, event);
     }
   };
 }
@@ -48,6 +59,7 @@ export async function handler(event: WorkerEvent): Promise<Operation> {
   configuredHandler ??= createWorker({
     repository: new DynamoRepository({ tableName: requiredEnvironment('TABLE_NAME') }),
     executionRoleArn: requiredEnvironment('EXECUTION_ROLE_ARN'),
+    region: requiredEnvironment('AWS_REGION'),
   });
   return configuredHandler(event);
 }
@@ -56,6 +68,8 @@ async function start(
   repository: Repository,
   cloudFormation: CloudFormation,
   executionRoleArn: string,
+  now: () => Date,
+  region: string | undefined,
   event: WorkerEvent,
 ): Promise<Operation> {
   const operation = await mustGetOperation(repository, event);
@@ -64,12 +78,18 @@ async function start(
   if (
     !plan ||
     plan.status !== 'QUEUED' ||
+    !plan.approvedAt ||
+    !plan.approvedBy ||
+    plan.ownerId !== operation.ownerId ||
+    plan.id !== operation.planId ||
     plan.operationId !== operation.id ||
-    plan.digest !== operation.planDigest
+    plan.digest !== operation.planDigest ||
+    plan.stackName !== operation.stackName ||
+    plan.region !== region
   ) {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'FAILED',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       message: 'Plano enfileirado inválido ou divergente.',
     });
     return await mustGetOperation(repository, event);
@@ -89,7 +109,7 @@ async function start(
     );
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'RUNNING',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       stackId: response.StackId,
     });
     return mustGetOperation(repository, event);
@@ -99,14 +119,14 @@ async function start(
     if (!hasOperationTag(existing, operation.id)) {
       await repository.updateOperation(event.ownerId, operation.id, {
         status: 'FAILED',
-        updatedAt: new Date().toISOString(),
+        updatedAt: now().toISOString(),
         message: 'Já existe uma stack sem a tag desta operação.',
       });
       return mustGetOperation(repository, event);
     }
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'RUNNING',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       stackId: existing.StackId,
     });
     return mustGetOperation(repository, event);
@@ -116,14 +136,15 @@ async function start(
 async function poll(
   repository: Repository,
   cloudFormation: CloudFormation,
+  now: () => Date,
   event: WorkerEvent,
 ): Promise<Operation> {
   const operation = await mustGetOperation(repository, event);
   if (operation.status === 'SUCCEEDED' || operation.status === 'FAILED') return operation;
-  if (Date.now() - Date.parse(operation.createdAt) >= WORKFLOW_DEADLINE_MS) {
+  if (now().getTime() - Date.parse(operation.createdAt) >= WORKFLOW_DEADLINE_MS) {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'FAILED',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       message: 'A operação excedeu o prazo operacional de 55 minutos.',
     });
     return mustGetOperation(repository, event);
@@ -133,40 +154,44 @@ async function poll(
   if (!operation.stackId && !hasOperationTag(stack, operation.id)) {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'FAILED',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       stackId: stack.StackId,
       message: 'A stack consultada não pertence a esta operação.',
     });
   } else if (status === 'CREATE_COMPLETE') {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'SUCCEEDED',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       stackId: stack.StackId,
       outputs: outputs(stack.Outputs),
     });
   } else if (isFailedStackStatus(status)) {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'FAILED',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       stackId: stack.StackId,
       message: stack.StackStatusReason ?? status,
     });
   } else if (operation.status === 'PENDING') {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'RUNNING',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       stackId: stack.StackId,
     });
   }
   return mustGetOperation(repository, event);
 }
 
-async function fail(repository: Repository, event: WorkerEvent): Promise<Operation> {
+async function fail(
+  repository: Repository,
+  now: () => Date,
+  event: WorkerEvent,
+): Promise<Operation> {
   const operation = await mustGetOperation(repository, event);
   if (operation.status === 'PENDING' || operation.status === 'RUNNING') {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'FAILED',
-      updatedAt: new Date().toISOString(),
+      updatedAt: now().toISOString(),
       message: event.message ?? 'O workflow excedeu o tempo ou falhou.',
     });
   }

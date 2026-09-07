@@ -152,6 +152,102 @@ describe('ArchitectureService', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
+  it('recupera o plano persistido por uma nova instância e mantém read isolado por owner', async () => {
+    const { repository, service } = setup();
+    const plan = await service.plan(owner, {
+      name: 'dados-app',
+      blueprint: 'storage',
+      environment: 'dev',
+    });
+    const reader = new ArchitectureService(repository, {
+      region: 'sa-east-1',
+      now: () => fixedNow,
+    });
+
+    await expect(reader.getPlan(owner, { planId: plan.id })).resolves.toEqual(plan);
+    await expect(
+      reader.getPlan({ ...owner, ownerId: 'bob' }, { planId: plan.id }),
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await expect(
+      reader.getPlan({ ownerId: 'alice', scopes: [] }, { planId: plan.id }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expect(reader.getPlan(owner, { planId: plan.id, extra: true })).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+    });
+  });
+
+  it('valida prontidão local de planos planejados, aprovados, enfileirados, vencidos e adulterados', async () => {
+    const { repository, service } = setup();
+    const planned = await service.plan(owner, {
+      name: 'planejado',
+      blueprint: 'storage',
+      environment: 'dev',
+    });
+    await expect(service.validatePlan(owner, { planId: planned.id })).resolves.toMatchObject({
+      readyToApply: false,
+      checks: { integrity: true, notExpired: true, approved: false, notQueued: true },
+    });
+
+    await repository.approvePlan(
+      owner.ownerId,
+      planned.id,
+      planned.digest,
+      'admin',
+      fixedNow.toISOString(),
+    );
+    await expect(service.validatePlan(owner, { planId: planned.id })).resolves.toMatchObject({
+      status: 'APPROVED',
+      readyToApply: true,
+      checks: { integrity: true, notExpired: true, approved: true, notQueued: true },
+      reasons: [],
+    });
+
+    const operation = await service.apply(owner, {
+      planId: planned.id,
+      digest: planned.digest,
+      idempotencyKey: 'queued-validation',
+    });
+    await expect(service.validatePlan(owner, { planId: planned.id })).resolves.toMatchObject({
+      readyToApply: false,
+      checks: { integrity: true, notExpired: true, approved: true, notQueued: false },
+      operationId: operation.id,
+    });
+
+    const expired = await service.plan(owner, {
+      name: 'vencido',
+      blueprint: 'storage',
+      environment: 'dev',
+    });
+    await repository.approvePlan(
+      owner.ownerId,
+      expired.id,
+      expired.digest,
+      'admin',
+      fixedNow.toISOString(),
+    );
+    const tomorrow = new ArchitectureService(repository, {
+      region: 'sa-east-1',
+      now: () => new Date('2026-09-08T12:00:00.000Z'),
+    });
+    await expect(tomorrow.validatePlan(owner, { planId: expired.id })).resolves.toMatchObject({
+      readyToApply: false,
+      checks: { integrity: true, notExpired: false, approved: true, notQueued: true },
+    });
+
+    const tampered = structuredClone(expired);
+    tampered.id = 'pln-00000000-0000-4000-8000-000000000099';
+    (tampered.template as { Description: string }).Description = 'alterado';
+    await repository.putPlan(tampered);
+    await expect(service.validatePlan(owner, { planId: tampered.id })).resolves.toMatchObject({
+      readyToApply: false,
+      checks: { integrity: false },
+    });
+  });
+
   it('rejeita template adulterado ao aprovar', async () => {
     const { repository, service } = setup();
     const plan = await service.plan(owner, {

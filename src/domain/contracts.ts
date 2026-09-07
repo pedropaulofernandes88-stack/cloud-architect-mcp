@@ -25,6 +25,20 @@ export interface Plan {
   approvedBy?: string;
   operationId?: string;
 }
+export interface PlanValidation {
+  planId: string;
+  digest: string;
+  status: Plan['status'];
+  readyToApply: boolean;
+  checks: {
+    integrity: boolean;
+    notExpired: boolean;
+    approved: boolean;
+    notQueued: boolean;
+  };
+  reasons: string[];
+  operationId?: string;
+}
 export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
 export interface Operation {
   id: string;
