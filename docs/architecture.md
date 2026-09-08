@@ -14,7 +14,7 @@ A chave de idempotência identifica um comando do proprietário. Reutilizá-la p
 
 Estados do plano: `PLANNED → APPROVED → QUEUED`.
 
-Estados da operação: `PENDING → RUNNING → SUCCEEDED | FAILED`. Falha também pode ocorrer antes de iniciar. Resultados terminais não podem ser reabertos pela repetição de uma mensagem. Uma falha da orquestração não prova que todos os recursos foram removidos: confirme sempre a situação da stack.
+Estados da operação: `PENDING → RUNNING → SUCCEEDED | FAILED`. `PENDING` e `RUNNING` também podem passar a `NEEDS_ATTENTION` quando o resultado for incerto. Esse estado admite nova consulta e resolução; `SUCCEEDED` e `FAILED` permanecem terminais. Uma falha da orquestração não prova que todos os recursos foram removidos: confirme sempre a situação da stack.
 
 ## Identidade e aprovação
 
@@ -29,6 +29,18 @@ Na AWS, a transação que aceita o plano também cria a operação. DynamoDB Str
 A execução Standard tem nome determinístico. Uma repetição do início reconhece a execução existente. O worker usa o ID da operação como `ClientRequestToken`, verifica a identidade da stack ao recuperar uma criação e só considera `CREATE_COMPLETE` um sucesso.
 
 O repositório é retido e tem PITR. Falhas de entrega do stream possuem destino SQS e alarme. Isso não é entrega ilimitada: mensagens, streams e histórico dos serviços têm retenção finita, e a recuperação precisa ser acompanhada por um operador.
+
+O worker consulta o status e a tag de identidade da stack antes de interpretar o limite de 55 minutos. Uma stack concluída continua sendo sucesso mesmo após esse prazo; uma stack ainda em andamento passa a `NEEDS_ATTENTION`. Inícios fora do prazo passam a consultar o estado existente, sem criar uma nova stack.
+
+Falhas, timeouts e interrupções da execução Standard geram eventos para um reconciler. Ele confirma os dados com `DescribeExecution`, verifica state machine, nome e entrada, e consulta CloudFormation. A role não recebe `CreateStack` nem `PassRole`. Eventos podem faltar: não existe garantia de recuperação automática de toda operação, nem watchdog periódico nesta versão.
+
+## Histórico e comparação
+
+O histórico usa paginação por posição, em ordem decrescente de `createdAt#id`, com limite de 50 itens. O cursor contém tipo, posição e hash do proprietário; não é um token de autenticação. A identidade autenticada continua determinando a partição consultada. Resumos omitem templates e outputs; detalhes exigem consulta por ID.
+
+SQLite usa índice e busca por posição. DynamoDB consulta o GSI `Timeline` com projeção de chaves e hidrata os registros com leitura consistente, incluindo a aprovação separada. A entrada de novos itens no índice é eventualmente consistente; páginas não formam um snapshot. Registros anteriores à versão 0.3 requerem os atributos derivados de indexação, adicionados pela CLI de migração por proprietário.
+
+`compare_plans` compara somente planos do mesmo proprietário. Normaliza nomes físicos e tags reconhecidos como gerados pelo planejador, preserva alterações reais e limita a saída de diferenças. Informa o digest e a integridade de cada lado. Não consulta recursos implantados, não calcula custo e não produz um change set de atualização.
 
 ## Matriz de verificação
 

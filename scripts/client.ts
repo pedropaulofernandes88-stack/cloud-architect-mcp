@@ -13,6 +13,9 @@ const supported = [
   'validate_plan',
   'apply_architecture',
   'get_operation',
+  'list_plans',
+  'list_operations',
+  'compare_plans',
 ];
 if (!values.tool || !supported.includes(values.tool))
   throw new Error(
@@ -28,7 +31,7 @@ const input: unknown = values.input ? JSON.parse(await readFile(values.input, 'u
 if (!input || typeof input !== 'object' || Array.isArray(input))
   throw new Error('O arquivo de argumentos deve conter um objeto JSON.');
 const client = new Client(
-  { name: 'cloud-architect-cli', version: '0.2.0' },
+  { name: 'cloud-architect-cli', version: '0.3.0' },
   { versionNegotiation: { mode: 'auto' } },
 );
 try {

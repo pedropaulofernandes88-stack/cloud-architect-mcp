@@ -57,6 +57,14 @@ npm run client -- --tool plan_architecture --input examples/plan-storage.json
 
 ## Recuperação
 
+Uma operação `NEEDS_ATTENTION` requer consulta ao estado real da stack; o status não significa rollback concluído. O reconciler EventBridge faz essa consulta para eventos de execuções `FAILED`, `TIMED_OUT` ou `ABORTED`, após validar a execução no serviço Step Functions. Como a entrega é de melhor esforço, use a CLI quando necessário:
+
+```sh
+npm run reconcile -- --aws --owner <ownerId> --operation <operationId>
+```
+
+Configure `TABLE_NAME` e `AWS_REGION` e use uma identidade IAM administrativa com acesso de leitura aos planos/aprovações, leitura e escrita das operações e `cloudformation:DescribeStacks` nas stacks `camcp-*`. O comando verifica a identidade STS, consulta a stack e atualiza apenas o acompanhamento. Não chama `CreateStack`, não faz replay do dispatcher e não apaga recursos. Estados terminais não são reabertos.
+
 1. Consulte a operação por ID e a stack CloudFormation antes de repetir qualquer efeito.
 2. Se a operação estiver pendente, confira o stream, os erros do dispatcher e a fila de recuperação. A falha de entrega não significa recusa do plano.
 3. Se a execução já existe, acompanhe seu estado. O nome é o ID determinístico da operação; reenvios não devem criar outro nome.
@@ -64,6 +72,26 @@ npm run client -- --tool plan_architecture --input examples/plan-storage.json
 5. Faça replay de entrega apenas após identificar a causa. Não altere a chave de idempotência para contornar um erro.
 
 O destino SQS de uma falha de stream pode conter metadados sobre o lote, e a retenção do stream é limitada. Preserve a operação no banco; reconstrua a entrada `{ownerId, operationId}` verificada quando necessário. Reexecuções manuais e limpeza de recursos são ações administrativas com autorização própria.
+
+Não existe varredura periódica de operações paradas nesta versão. Uma falha de entrega antes de `StartExecution` pode deixar a operação pendente até intervenção do operador. Reconciliação sem stack encontrada registra a incerteza e não autoriza novo provisionamento.
+
+## Migrar o histórico de 0.2 para 0.3
+
+Instalações novas já gravam os atributos do GSI `Timeline`. Em uma atualização, implante o índice e aguarde seu estado `ACTIVE`. SQLite cria o índice local ao abrir o banco e inclui os registros existentes automaticamente.
+
+Na AWS, a migração é explícita por proprietário. Ela consulta a partição base com leitura consistente, sem `Scan`, e adiciona somente `timelinePK` e `timelineSK`. Primeiro inspecione a simulação:
+
+```sh
+npm run backfill:history -- --owner <ownerId> --max-pages 20
+```
+
+Após revisar o resultado, a opção `--write` grava os dois atributos derivados. O operador precisa de `dynamodb:Query` e `dynamodb:UpdateItem` na partição correspondente, além de identidade STS válida:
+
+```sh
+npm run backfill:history -- --owner <ownerId> --max-pages 20 --write
+```
+
+Se o resultado incluir `nextAfter`, continue com `--after <nextAfter>`. Cada página lê até 100 itens; o máximo permitido é 100 páginas por chamada. É seguro repetir uma execução: itens já indexados são contados como inalterados. A migração não modifica digests, aprovações ou estados e não torna um plano antigo válido novamente. Execute para cada proprietário conhecido e aguarde a propagação do GSI antes de conferir as listas.
 
 ## Validação em sandbox antes de produção
 

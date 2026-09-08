@@ -13,7 +13,7 @@ const endpoint = createMcpEndpoint(
   LOCAL_PRINCIPAL,
 );
 const client = new Client(
-  { name: 'cloud-architect-demo', version: '0.2.0' },
+  { name: 'cloud-architect-demo', version: '0.3.0' },
   { versionNegotiation: { mode: 'auto' } },
 );
 try {
@@ -33,6 +33,25 @@ try {
   });
   if (result.isError) throw new Error(JSON.stringify(result.content));
   const plan = result.structuredContent as unknown as Plan;
+  const alternative = await client.callTool({
+    name: 'plan_architecture',
+    arguments: { ...plan.input },
+  });
+  if (alternative.isError) throw new Error(JSON.stringify(alternative.content));
+  const alternativePlan = alternative.structuredContent as unknown as Plan;
+  const comparison = await client.callTool({
+    name: 'compare_plans',
+    arguments: { leftPlanId: plan.id, rightPlanId: alternativePlan.id },
+  });
+  if (comparison.isError) throw new Error(JSON.stringify(comparison.content));
+  const planHistory = await client.callTool({ name: 'list_plans', arguments: { limit: 1 } });
+  if (planHistory.isError) throw new Error(JSON.stringify(planHistory.content));
+  const firstPage = planHistory.structuredContent as { nextCursor: string };
+  const nextPlanHistory = await client.callTool({
+    name: 'list_plans',
+    arguments: { limit: 1, cursor: firstPage.nextCursor },
+  });
+  if (nextPlanHistory.isError) throw new Error(JSON.stringify(nextPlanHistory.content));
   const args = { planId: plan.id, digest: plan.digest, idempotencyKey: randomUUID() };
   const blocked = await client.callTool({ name: 'apply_architecture', arguments: args });
   if (!blocked.isError) throw new Error('Invariante violada: aplicação sem aprovação.');
@@ -57,12 +76,16 @@ try {
     outputs: { mode: 'SIMULATED' },
   });
   const replay = await client.callTool({ name: 'apply_architecture', arguments: args });
+  if (replay.isError) throw new Error(JSON.stringify(replay.content));
   const repeated = replay.structuredContent as unknown as Operation;
   if (repeated.id !== operation.id) throw new Error('Invariante violada: operação duplicada.');
   const status = await client.callTool({
     name: 'get_operation',
     arguments: { operationId: operation.id },
   });
+  if (status.isError) throw new Error(JSON.stringify(status.content));
+  const operationHistory = await client.callTool({ name: 'list_operations', arguments: {} });
+  if (operationHistory.isError) throw new Error(JSON.stringify(operationHistory.content));
   console.log(
     JSON.stringify(
       {
@@ -72,6 +95,9 @@ try {
         plan: { id: plan.id, digest: plan.digest, resources: plan.template.Resources },
         approvalRequired: blocked.isError,
         replaySameOperation: true,
+        comparison: comparison.structuredContent,
+        planHistory: [planHistory.structuredContent, nextPlanHistory.structuredContent],
+        operationHistory: operationHistory.structuredContent,
         operation: status.structuredContent,
       },
       null,

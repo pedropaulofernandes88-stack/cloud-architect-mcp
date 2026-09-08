@@ -4,6 +4,8 @@ import * as z from 'zod/v4';
 import type { Principal } from './domain/contracts.js';
 import { DomainError } from './domain/contracts.js';
 import { ArchitectureService } from './domain/service.js';
+import { historyInputSchema } from './domain/history.js';
+import { comparePlansInputSchema } from './domain/comparison.js';
 import {
   applyInputSchema,
   architectureInputSchema,
@@ -11,7 +13,7 @@ import {
   statusInputSchema,
 } from './domain/schemas.js';
 
-const serverInfo = { name: 'cloud-architect-mcp', version: '0.2.0' };
+const serverInfo = { name: 'cloud-architect-mcp', version: '0.3.0' };
 
 export function createMcpEndpoint(service: ArchitectureService, principal: Principal) {
   return createMcpHandler(
@@ -49,6 +51,42 @@ export function createMcpEndpoint(service: ArchitectureService, principal: Princ
           annotations: { readOnlyHint: true, idempotentHint: true },
         },
         async (input) => execute(() => service.getPlan(principal, input)),
+      );
+
+      server.registerTool(
+        'list_plans',
+        {
+          title: 'Histórico de planos',
+          description:
+            'Lista seus planos do mais recente ao mais antigo, em páginas de até 50 registros. Use nextCursor para continuar. Na AWS, novos registros podem levar alguns instantes para aparecer no índice.',
+          inputSchema: historyInputSchema,
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        async (input) => execute(() => service.listPlans(principal, input)),
+      );
+
+      server.registerTool(
+        'list_operations',
+        {
+          title: 'Histórico de operações',
+          description:
+            'Lista suas operações por data de criação, em páginas, incluindo as que precisam de atenção. Consulte get_operation para acompanhar uma operação específica.',
+          inputSchema: historyInputSchema,
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        async (input) => execute(() => service.listOperations(principal, input)),
+      );
+
+      server.registerTool(
+        'compare_plans',
+        {
+          title: 'Comparar propostas de arquitetura',
+          description:
+            'Compara duas propostas suas. Separa mudanças da arquitetura dos nomes gerados automaticamente. É uma comparação de planos para revisão, não um CloudFormation change set nem uma atualização de recursos existentes.',
+          inputSchema: comparePlansInputSchema,
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        async (input) => execute(() => service.comparePlans(principal, input)),
       );
 
       server.registerTool(

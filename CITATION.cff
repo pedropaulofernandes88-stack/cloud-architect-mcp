@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: 'Se este software for útil no seu trabalho, considere citá-lo com os dados abaixo.'
+type: software
+title: 'Cloud Architect MCP'
+authors:
+  - family-names: 'pedropaulofernandes88-stack'
+    alias: 'pedropaulofernandes88-stack'
+    website: 'https://github.com/pedropaulofernandes88-stack'
+version: '0.3.0'
+date-released: 2026-09-07
+license: Apache-2.0
+repository-code: 'https://github.com/pedropaulofernandes88-stack/cloud-architect-mcp'
+url: 'https://github.com/pedropaulofernandes88-stack/cloud-architect-mcp'
+abstract: >-
+  Servidor MCP stateless para planejar arquiteturas AWS a partir de blueprints,
+  comparar propostas e acompanhar operações com aprovação administrativa separada.
+  Inclui simulação local e infraestrutura CDK para validação posterior em AWS.
+keywords:
+  - MCP
+  - AWS
+  - serverless
+  - infrastructure-as-code
+  - TypeScript

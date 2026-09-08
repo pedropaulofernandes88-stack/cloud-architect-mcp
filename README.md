@@ -1,4 +1,6 @@
-# Cloud Architect MCP · 0.2.0
+# Cloud Architect MCP · 0.3.0
+
+![Cloud Architect MCP: planejar, aprovar e acompanhar](docs/assets/linkedin-cover.png)
 
 Servidor MCP stateless para gerar planos AWS revisáveis e provisionar recursos após aprovação administrativa. Implementado em TypeScript, com o SDK oficial MCP v2 e protocolo **2026-07-28**.
 
@@ -14,6 +16,9 @@ O projeto tem um modo local executável sem conta AWS e infraestrutura CDK para 
 | `get_operation`      | Estado, resultado e identificadores da implantação                       | `architecture:read`  |
 | `get_plan`           | Recupera um plano persistido entre chamadas                              | `architecture:read`  |
 | `validate_plan`      | Verifica integridade, validade, aprovação e prontidão local              | `architecture:read`  |
+| `list_plans`         | Histórico paginado de propostas do proprietário                          | `architecture:read`  |
+| `list_operations`    | Histórico paginado de execuções do proprietário                          | `architecture:read`  |
+| `compare_plans`      | Diferenças de definição, parâmetros e identidade física entre planos     | `architecture:read`  |
 
 `validate_plan` não consulta preços, quotas, IAM ou CloudFormation.
 
@@ -28,6 +33,12 @@ O modelo de linguagem fica no cliente MCP: ele escolhe o blueprint e preenche pa
 
 Veja [o guia de uso e aplicações](docs/usage.md) para um exemplo completo em linguagem simples.
 
+## Novidades da versão 0.3
+
+O histórico permite retomar o trabalho sem guardar cada ID. A comparação distingue mudanças de arquitetura de nomes gerados automaticamente: dois planos equivalentes ainda podem criar stacks diferentes. Operações cujo resultado ficou incerto ganham o estado recuperável `NEEDS_ATTENTION`; a reconciliação consulta a CloudFormation antes de concluir o resultado.
+
+O [artigo para LinkedIn](docs/linkedin-article.md) apresenta a motivação, o fluxo e as aplicações do projeto.
+
 ## Executar localmente
 
 Requisito: **Node.js 24.x**, incluindo o módulo `node:sqlite`.
@@ -41,13 +52,15 @@ npm run dev
 
 O servidor escuta exclusivamente em `http://127.0.0.1:8787/mcp`. O banco SQLite fica em `.local/architect.db`, fora do Git. O perfil local representa um único desenvolvedor confiável, sem autenticação, e deve permanecer em loopback.
 
-`npm run demo` executa cliente e servidor oficiais MCP v2 no mesmo processo: gera o plano, verifica a recusa sem aprovação, simula a aprovação administrativa, aplica, consulta e repete a operação. A aprovação automática desse exemplo existe apenas em um banco efêmero de demonstração.
+`npm run demo` executa cliente e servidor oficiais MCP v2 no mesmo processo: gera e compara dois planos, pagina o histórico, verifica a recusa sem aprovação, simula a aprovação administrativa, aplica, consulta e repete a operação. A aprovação automática desse exemplo existe apenas em um banco efêmero de demonstração.
 
 Em outro terminal, com `npm run dev` aberto:
 
 ```sh
 npm run client -- --tool list_blueprints
 npm run client -- --tool plan_architecture --input examples/plan-storage.json
+npm run client -- --tool list_plans --input examples/history.json
+npm run client -- --tool list_operations --input examples/history.json
 ```
 
 Revise o template retornado. Use o `id` e o `digest` completos no comando administrativo:
@@ -81,11 +94,17 @@ flowchart LR
     Worker --> CF[CloudFormation]
     Worker --> DB
     Stream --> DLQ[Fila de recuperação]
+    Workflow --> Events[EventBridge: falha ou interrupção]
+    Events --> Reconciler[Lambda reconciler]
+    Reconciler --> CF
+    Reconciler --> DB
 ```
 
 A aprovação é vinculada ao digest do template. A operação e a mudança de estado do plano são gravadas na mesma transação. O registro da operação funciona como uma saída persistida: o stream dispara a execução mesmo que a conexão MCP termine. O nome determinístico da execução e o token CloudFormation permitem recuperar repetições.
 
 O transporte não preserva sessão MCP. O estado de negócio permanece no banco e no workflow. A consulta usa `get_operation`; este MVP não implementa a extensão MCP Tasks nem subscriptions/SSE. Clientes precisam suportar a revisão 2026-07-28; o modo legado é rejeitado explicitamente.
+
+O reconciler valida eventos de execuções interrompidas e consulta a stack, sem permissão para criar recursos. EventBridge tem entrega de melhor esforço; a CLI administrativa oferece reconciliação manual. Não há varredura global automática de operações paradas. Veja [recuperação e migração do histórico](docs/deployment.md).
 
 ## Infraestrutura e validação
 
@@ -129,11 +148,20 @@ src/http.ts       Limites HTTP, origem e metadados de autorização
 src/lambda.ts     Adapter API Gateway
 src/dispatcher.ts Entrega das operações à Step Functions
 src/worker.ts     Criação e acompanhamento CloudFormation
-src/cli/          Inspeção e aprovação administrativa
+src/reconciler.ts Reconciliação de workflows interrompidos
+src/cli/          Inspeção, aprovação, reconciliação e migração
 infra/            Infraestrutura CDK
 tests/            Domínio, protocolo, persistência e infraestrutura
 examples/         Entradas sem segredos
 ```
+
+## Licença e citação
+
+Licenciado sob a [Apache License 2.0](LICENSE), com os créditos em [NOTICE](NOTICE). A licença permite uso comercial, respeitadas suas condições, incluindo preservação dos avisos aplicáveis. Dependências de terceiros mantêm suas licenças próprias.
+
+Para citar o projeto, use [CITATION.cff](CITATION.cff) ou a opção **Cite this repository** no GitHub. A citação em artigos e apresentações é recomendada; não foi acrescentada uma obrigação de citação acadêmica à licença. O crédito identifica o perfil público `pedropaulofernandes88-stack`.
+
+O campo `private: true` em `package.json` apenas evita publicação acidental no npm; não controla a visibilidade do repositório GitHub.
 
 ## Referências
 

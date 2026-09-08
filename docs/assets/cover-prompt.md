@@ -1,0 +1,9 @@
+# Capa do artigo
+
+Ferramenta: geração de imagem integrada do Codex, sem CLI de API.
+
+Resultado: [linkedin-cover.png](linkedin-cover.png). Capa conceitual para o artigo; não representa uma topologia AWS exaustiva. Texto e composição foram inspecionados visualmente após a geração.
+
+Prompt utilizado:
+
+> Use case: ads-marketing. Create a polished editorial cover illustration for a LinkedIn technical article about the Cloud Architect MCP project. Wide landscape banner, approximately 1.91:1, crisp high resolution. Subject: controlled cloud infrastructure provisioning through stateless MCP, represented conceptually by an elegant cloud built from modular architectural blocks connected through three ordered stages: planning document, human approval checkpoint, and monitored cloud operation. This is a conceptual illustration, not an AWS architecture diagram. Premium editorial technology aesthetic: deep navy background, restrained warm amber and teal accents, fine technical grid, dimensional architectural blocks, generous negative space, exceptional typography hierarchy, sophisticated and readable rather than crowded. Place the illustration and title together in a balanced composition with safe margins of at least 8% for social cropping. Exact text only: large title "Cloud Architect MCP"; supporting line "Planejar. Aprovar. Acompanhar."; small label "MCP STATELESS · AWS". Use clear contemporary sans serif typography, preserve spelling exactly. Do not add other words, URLs, claims of certification, official service logos, people or robots. Avoid tiny labels, excessive neon, stock-photo clichés, fake charts and illegible decorative text. The cloud and approval checkpoint should visually communicate deliberate control and traceability. Opaque background. Generate a finished professional raster banner ready to accompany the article.

@@ -9,6 +9,8 @@ import {
 } from './contracts.js';
 import { CATALOG, createPlan } from './planner.js';
 import { planDigest } from './repository-rules.js';
+import { listPlans, listOperations } from './history.js';
+import { comparePlans } from './comparison.js';
 import {
   applyInputSchema,
   architectureInputSchema,
@@ -30,6 +32,18 @@ export class ArchitectureService {
   catalog(principal: Principal) {
     this.requireScope(principal, 'architecture:read');
     return CATALOG;
+  }
+
+  listPlans(principal: Principal, input: unknown) {
+    return listPlans(this.repository, principal, input);
+  }
+
+  listOperations(principal: Principal, input: unknown) {
+    return listOperations(this.repository, principal, input);
+  }
+
+  comparePlans(principal: Principal, input: unknown) {
+    return comparePlans(this.repository, principal, input);
   }
 
   async getPlan(principal: Principal, input: unknown): Promise<Plan> {

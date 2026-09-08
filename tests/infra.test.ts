@@ -14,6 +14,16 @@ describe('CDK infrastructure', () => {
     template.hasResourceProperties('AWS::DynamoDB::Table', {
       StreamSpecification: { StreamViewType: 'NEW_IMAGE' },
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+      GlobalSecondaryIndexes: Match.arrayWith([
+        {
+          IndexName: 'Timeline',
+          Projection: { ProjectionType: 'KEYS_ONLY' },
+          KeySchema: Match.arrayWith([
+            { AttributeName: 'timelinePK', KeyType: 'HASH' },
+            { AttributeName: 'timelineSK', KeyType: 'RANGE' },
+          ]),
+        },
+      ]),
     });
     template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
       FilterCriteria: { Filters: [{ Pattern: Match.stringLikeRegexp('.*PENDING.*') }] },
@@ -21,6 +31,12 @@ describe('CDK infrastructure', () => {
     template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
       StateMachineType: 'STANDARD',
       LoggingConfiguration: { IncludeExecutionData: false, Level: 'ERROR' },
+    });
+    template.hasResourceProperties('AWS::Events::Rule', {
+      EventPattern: Match.objectLike({
+        source: ['aws.states'],
+        detail: { status: ['FAILED', 'TIMED_OUT', 'ABORTED'] },
+      }),
     });
   }, 15_000);
 });

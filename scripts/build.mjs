@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { mkdir } from 'node:fs/promises';
 
-for (const name of ['lambda', 'dispatcher', 'worker']) {
+for (const name of ['lambda', 'dispatcher', 'worker', 'reconciler']) {
   await mkdir(`dist/${name}`, { recursive: true });
   await build({
     entryPoints: [`src/${name}.ts`],
@@ -18,4 +18,4 @@ for (const name of ['lambda', 'dispatcher', 'worker']) {
     },
   });
 }
-console.log('Bundles Lambda, dispatcher e worker gerados em dist/.');
+console.log('Bundles Lambda, dispatcher, worker e reconciler gerados em dist/.');

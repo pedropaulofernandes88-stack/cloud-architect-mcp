@@ -11,7 +11,7 @@ import type { Operation, Repository } from './domain/contracts.js';
 import { assertPlanIntegrity } from './domain/repository-rules.js';
 
 type CloudFormation = Pick<CloudFormationClient, 'send'>;
-export type WorkerAction = 'start' | 'poll' | 'fail';
+export type WorkerAction = 'start' | 'poll' | 'reconcile' | 'fail';
 export interface WorkerEvent {
   action: WorkerAction;
   ownerId: string;
@@ -48,6 +48,8 @@ export function createWorker(options: WorkerOptions) {
         );
       case 'poll':
         return poll(options.repository, cloudFormation, now, event);
+      case 'reconcile':
+        return reconcile(options.repository, cloudFormation, now, event);
       case 'fail':
         return fail(options.repository, now, event);
     }
@@ -74,6 +76,9 @@ async function start(
 ): Promise<Operation> {
   const operation = await mustGetOperation(repository, event);
   if (operation.status !== 'PENDING') return operation;
+  if (now().getTime() - Date.parse(operation.createdAt) >= WORKFLOW_DEADLINE_MS) {
+    return reconcile(repository, cloudFormation, now, event);
+  }
   const plan = await repository.getPlan(event.ownerId, operation.planId);
   if (
     !plan ||
@@ -141,19 +146,11 @@ async function poll(
 ): Promise<Operation> {
   const operation = await mustGetOperation(repository, event);
   if (operation.status === 'SUCCEEDED' || operation.status === 'FAILED') return operation;
-  if (now().getTime() - Date.parse(operation.createdAt) >= WORKFLOW_DEADLINE_MS) {
-    await repository.updateOperation(event.ownerId, operation.id, {
-      status: 'FAILED',
-      updatedAt: now().toISOString(),
-      message: 'A operação excedeu o prazo operacional de 55 minutos.',
-    });
-    return mustGetOperation(repository, event);
-  }
   const stack = await describeStack(cloudFormation, operation.stackId ?? operation.stackName);
   const status = stack.StackStatus ?? 'UNKNOWN';
-  if (!operation.stackId && !hasOperationTag(stack, operation.id)) {
+  if (!hasOperationTag(stack, operation.id)) {
     await repository.updateOperation(event.ownerId, operation.id, {
-      status: 'FAILED',
+      status: 'NEEDS_ATTENTION',
       updatedAt: now().toISOString(),
       stackId: stack.StackId,
       message: 'A stack consultada não pertence a esta operação.',
@@ -172,11 +169,75 @@ async function poll(
       stackId: stack.StackId,
       message: stack.StackStatusReason ?? status,
     });
-  } else if (operation.status === 'PENDING') {
+  } else if (now().getTime() - Date.parse(operation.createdAt) >= WORKFLOW_DEADLINE_MS) {
+    await repository.updateOperation(event.ownerId, operation.id, {
+      status: 'NEEDS_ATTENTION',
+      updatedAt: now().toISOString(),
+      stackId: stack.StackId,
+      message: `CloudFormation permanece ${status} após o prazo; recursos podem existir.`,
+    });
+  } else if (operation.status === 'PENDING' || operation.status === 'NEEDS_ATTENTION') {
     await repository.updateOperation(event.ownerId, operation.id, {
       status: 'RUNNING',
       updatedAt: now().toISOString(),
       stackId: stack.StackId,
+    });
+  }
+  return mustGetOperation(repository, event);
+}
+
+/** Read-only recovery for uncertain workflow outcomes. It never creates resources. */
+async function reconcile(
+  repository: Repository,
+  cloudFormation: CloudFormation,
+  now: () => Date,
+  event: WorkerEvent,
+): Promise<Operation> {
+  const operation = await mustGetOperation(repository, event);
+  if (operation.status === 'SUCCEEDED' || operation.status === 'FAILED') return operation;
+  let stack: Stack;
+  try {
+    stack = await describeStack(cloudFormation, operation.stackId ?? operation.stackName);
+  } catch (error) {
+    if (!isMissingStack(error)) throw error;
+    await repository.updateOperation(event.ownerId, operation.id, {
+      status: 'NEEDS_ATTENTION',
+      updatedAt: now().toISOString(),
+      message:
+        'A stack não foi encontrada durante a reconciliação; confirme o ambiente antes de nova ação.',
+    });
+    return mustGetOperation(repository, event);
+  }
+  if (!hasOperationTag(stack, operation.id)) {
+    await repository.updateOperation(event.ownerId, operation.id, {
+      status: 'NEEDS_ATTENTION',
+      updatedAt: now().toISOString(),
+      stackId: stack.StackId,
+      message: 'A stack encontrada não possui a tag desta operação.',
+    });
+    return mustGetOperation(repository, event);
+  }
+  const status = stack.StackStatus ?? 'UNKNOWN';
+  if (status === 'CREATE_COMPLETE') {
+    await repository.updateOperation(event.ownerId, operation.id, {
+      status: 'SUCCEEDED',
+      updatedAt: now().toISOString(),
+      stackId: stack.StackId,
+      outputs: outputs(stack.Outputs),
+    });
+  } else if (isFailedStackStatus(status)) {
+    await repository.updateOperation(event.ownerId, operation.id, {
+      status: 'FAILED',
+      updatedAt: now().toISOString(),
+      stackId: stack.StackId,
+      message: stack.StackStatusReason ?? status,
+    });
+  } else {
+    await repository.updateOperation(event.ownerId, operation.id, {
+      status: 'NEEDS_ATTENTION',
+      updatedAt: now().toISOString(),
+      stackId: stack.StackId,
+      message: `CloudFormation permanece ${status}; recursos podem existir.`,
     });
   }
   return mustGetOperation(repository, event);
@@ -190,7 +251,7 @@ async function fail(
   const operation = await mustGetOperation(repository, event);
   if (operation.status === 'PENDING' || operation.status === 'RUNNING') {
     await repository.updateOperation(event.ownerId, operation.id, {
-      status: 'FAILED',
+      status: 'NEEDS_ATTENTION',
       updatedAt: now().toISOString(),
       message: event.message ?? 'O workflow excedeu o tempo ou falhou.',
     });
@@ -238,10 +299,19 @@ function isFailedStackStatus(status: string): boolean {
   return status.includes('FAILED') || status.includes('ROLLBACK') || status.startsWith('DELETE_');
 }
 
+function isMissingStack(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    error.name === 'ValidationError'
+  );
+}
+
 function assertEvent(event: WorkerEvent): void {
   if (
     !event ||
-    !['start', 'poll', 'fail'].includes(event.action) ||
+    !['start', 'poll', 'reconcile', 'fail'].includes(event.action) ||
     !event.ownerId ||
     !event.operationId
   ) {

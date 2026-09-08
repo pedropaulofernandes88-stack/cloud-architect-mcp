@@ -5,6 +5,8 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -37,6 +39,12 @@ export class CloudArchitectMcpStack extends cdk.Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       stream: dynamodb.StreamViewType.NEW_IMAGE,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: 'Timeline',
+      partitionKey: { name: 'timelinePK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timelineSK', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
 
     const failureQueue = new sqs.Queue(this, 'DispatcherFailureQueue', {
@@ -192,13 +200,87 @@ export class CloudArchitectMcpStack extends cdk.Stack {
     });
     table.grantStreamRead(dispatcher);
 
+    const reconcilerFailureQueue = new sqs.Queue(this, 'ReconcilerFailureQueue', {
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+    const reconciler = this.lambda('Reconciler', 'reconciler', {
+      TABLE_NAME: table.tableName,
+      STATE_MACHINE_ARN: stateMachine.attrArn,
+    });
+    reconciler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem'],
+        resources: [table.tableArn],
+        conditions: {
+          'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['OWNER#*', 'APPROVAL#*'] },
+        },
+      }),
+    );
+    reconciler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:PutItem'],
+        resources: [table.tableArn],
+        conditions: { 'ForAllValues:StringLike': { 'dynamodb:LeadingKeys': ['OWNER#*'] } },
+      }),
+    );
+    reconciler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['cloudformation:DescribeStacks'],
+        resources: [
+          this.formatArn({
+            service: 'cloudformation',
+            resource: 'stack',
+            resourceName: 'camcp-*/*',
+          }),
+        ],
+      }),
+    );
+    reconciler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['states:DescribeExecution'],
+        resources: [
+          this.formatArn({
+            service: 'states',
+            resource: 'execution',
+            resourceName: `${stateMachine.attrName}:*`,
+          }),
+        ],
+      }),
+    );
+    new events.Rule(this, 'WorkflowFailureReconciliation', {
+      eventPattern: {
+        source: ['aws.states'],
+        detailType: ['Step Functions Execution Status Change'],
+        detail: {
+          stateMachineArn: [stateMachine.attrArn],
+          status: ['FAILED', 'TIMED_OUT', 'ABORTED'],
+        },
+      },
+      targets: [
+        new targets.LambdaFunction(reconciler, {
+          deadLetterQueue: reconcilerFailureQueue,
+          retryAttempts: 3,
+        }),
+      ],
+    });
+
     const gateway = this.lambda('Gateway', 'lambda', {
       TABLE_NAME: table.tableName,
       EXPECTED_ISSUER: issuer,
     });
     // The MCP process only creates plans or transactionally enqueues operations.
     gateway.addToRolePolicy(
-      new iam.PolicyStatement({ actions: ['dynamodb:GetItem'], resources: [table.tableArn] }),
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:BatchGetItem'],
+        resources: [table.tableArn],
+      }),
+    );
+    gateway.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:Query'],
+        resources: [table.tableArn, table.tableArn + '/index/Timeline'],
+      }),
     );
     gateway.addToRolePolicy(
       new iam.PolicyStatement({
@@ -249,6 +331,11 @@ export class CloudArchitectMcpStack extends cdk.Stack {
     });
     new cloudwatch.Alarm(this, 'WorkerErrorAlarm', {
       metric: worker.metricErrors(),
+      threshold: 1,
+      evaluationPeriods: 1,
+    });
+    new cloudwatch.Alarm(this, 'ReconcilerDlqAlarm', {
+      metric: reconcilerFailureQueue.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
     });
@@ -329,6 +416,10 @@ function workflowDefinition(workerArn: string) {
           'Lambda.ServiceException',
           'Lambda.AWSLambdaException',
           'Lambda.SdkClientException',
+          'Lambda.Unknown',
+          'Lambda.TooManyRequestsException',
+          'Sandbox.Timedout',
+          'States.TaskFailed',
         ],
         IntervalSeconds: 2,
         MaxAttempts: 3,
@@ -350,6 +441,7 @@ function workflowDefinition(workerArn: string) {
         Choices: [
           { Variable: '$.operation.status', StringEquals: 'SUCCEEDED', Next: 'Succeeded' },
           { Variable: '$.operation.status', StringEquals: 'FAILED', Next: 'Failed' },
+          { Variable: '$.operation.status', StringEquals: 'NEEDS_ATTENTION', Next: 'Failed' },
         ],
         Default: 'Wait',
       },
@@ -365,6 +457,22 @@ function workflowDefinition(workerArn: string) {
             message: 'Workflow falhou ou excedeu o prazo.',
           },
         },
+        Retry: [
+          {
+            ErrorEquals: [
+              'Lambda.ServiceException',
+              'Lambda.AWSLambdaException',
+              'Lambda.SdkClientException',
+              'Lambda.Unknown',
+              'Lambda.TooManyRequestsException',
+              'Sandbox.Timedout',
+              'States.TaskFailed',
+            ],
+            IntervalSeconds: 2,
+            MaxAttempts: 3,
+            BackoffRate: 2,
+          },
+        ],
         Next: 'Failed',
       },
       Succeeded: { Type: 'Succeed' },

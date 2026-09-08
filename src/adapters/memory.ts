@@ -1,4 +1,11 @@
-import type { Operation, OperationUpdate, Plan, Repository } from '../domain/contracts.js';
+import type {
+  HistoryPage,
+  HistoryQuery,
+  Operation,
+  OperationUpdate,
+  Plan,
+  Repository,
+} from '../domain/contracts.js';
 import { approve, applyOperationUpdate, enqueue, operationId } from '../domain/repository-rules.js';
 import { DomainError } from '../domain/contracts.js';
 
@@ -25,6 +32,20 @@ export class MemoryRepository implements Repository {
   async getPlan(ownerId: string, planId: string): Promise<Plan | undefined> {
     const plan = this.plans.get(this.planKey(ownerId, planId));
     return plan && structuredClone(plan);
+  }
+
+  async listPlans(ownerId: string, query: HistoryQuery): Promise<HistoryPage<Plan>> {
+    return this.history(
+      [...this.plans.values()].filter((plan) => plan.ownerId === ownerId),
+      query,
+    );
+  }
+
+  async listOperations(ownerId: string, query: HistoryQuery): Promise<HistoryPage<Operation>> {
+    return this.history(
+      [...this.operations.values()].filter((operation) => operation.ownerId === ownerId),
+      query,
+    );
   }
 
   async approvePlan(
@@ -77,7 +98,29 @@ export class MemoryRepository implements Repository {
   ): Promise<void> {
     const key = this.operationKey(ownerId, operationIdValue);
     const operation = this.operations.get(key);
-    if (!operation) return;
+    if (!operation) throw new DomainError('NOT_FOUND', 'Operação não encontrada.');
     this.operations.set(key, applyOperationUpdate(operation, update));
   }
+
+  private history<T extends { id: string; createdAt: string }>(
+    records: T[],
+    query: HistoryQuery,
+  ): HistoryPage<T> {
+    const ordered = records
+      .map((record) => ({ record, position: historyPosition(record) }))
+      .filter(({ position }) => !query.before || position < query.before)
+      .sort((left, right) => right.position.localeCompare(left.position));
+    const page = ordered.slice(0, query.limit + 1);
+    const hasNext = page.length > query.limit;
+    const items = page.slice(0, query.limit).map(({ record }) => structuredClone(record));
+    const last = page[Math.min(query.limit, page.length) - 1];
+    return {
+      items,
+      ...(hasNext && last ? { nextPosition: last.position } : {}),
+    };
+  }
+}
+
+function historyPosition(record: { id: string; createdAt: string }): string {
+  return `${record.createdAt}#${record.id}`;
 }

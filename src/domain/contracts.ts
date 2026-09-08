@@ -39,7 +39,7 @@ export interface PlanValidation {
   reasons: string[];
   operationId?: string;
 }
-export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'NEEDS_ATTENTION';
 export interface Operation {
   id: string;
   ownerId: string;
@@ -49,20 +49,28 @@ export interface Operation {
   createdAt: string;
   updatedAt: string;
   status: OperationStatus;
-  executionArn?: string;
   stackId?: string;
   message?: string;
   outputs?: Record<string, string>;
 }
-export type OperationUpdate = Partial<
-  Pick<Operation, 'executionArn' | 'stackId' | 'message' | 'outputs'>
-> & {
+export type OperationUpdate = Partial<Pick<Operation, 'stackId' | 'message' | 'outputs'>> & {
   status: OperationStatus;
   updatedAt: string;
 };
+/** Cursor position is internal; the service binds public cursors to owner and entity kind. */
+export interface HistoryQuery {
+  limit: number;
+  before?: string;
+}
+export interface HistoryPage<T> {
+  items: T[];
+  nextPosition?: string;
+}
 export interface Repository {
   putPlan(plan: Plan): Promise<void>;
   getPlan(ownerId: string, planId: string): Promise<Plan | undefined>;
+  listPlans(ownerId: string, query: HistoryQuery): Promise<HistoryPage<Plan>>;
+  listOperations(ownerId: string, query: HistoryQuery): Promise<HistoryPage<Operation>>;
   approvePlan(
     ownerId: string,
     planId: string,

@@ -4,6 +4,8 @@ import { dirname } from 'node:path';
 import {
   DomainError,
   type Plan,
+  type HistoryPage,
+  type HistoryQuery,
   type Operation,
   type OperationUpdate,
   type Repository,
@@ -22,7 +24,9 @@ export class SqliteRepository implements Repository {
       CREATE TABLE IF NOT EXISTS records (
         owner TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL,
         PRIMARY KEY (owner, kind, id)
-      );`);
+      );
+      CREATE INDEX IF NOT EXISTS records_history_idx
+      ON records(owner, kind, (json_extract(payload, '$.createdAt') || '#' || id) DESC);`);
   }
 
   close(): void {
@@ -66,6 +70,14 @@ export class SqliteRepository implements Repository {
 
   async getPlan(owner: string, id: string): Promise<Plan | undefined> {
     return this.read<Plan>(owner, 'plan', id);
+  }
+
+  async listPlans(owner: string, query: HistoryQuery): Promise<HistoryPage<Plan>> {
+    return this.history<Plan>(owner, 'plan', query);
+  }
+
+  async listOperations(owner: string, query: HistoryQuery): Promise<HistoryPage<Operation>> {
+    return this.history<Operation>(owner, 'operation', query);
   }
 
   async approvePlan(
@@ -128,5 +140,35 @@ export class SqliteRepository implements Repository {
       )
       .all()
       .map((row) => JSON.parse(String(row.payload)) as Operation);
+  }
+
+  private history<T extends { id: string; createdAt: string }>(
+    owner: string,
+    kind: 'plan' | 'operation',
+    query: HistoryQuery,
+  ): HistoryPage<T> {
+    const position = "json_extract(payload, '$.createdAt') || '#' || id";
+    const rows = query.before
+      ? this.db
+          .prepare(
+            `SELECT payload, ${position} AS position FROM records
+             WHERE owner = ? AND kind = ? AND ${position} < ?
+             ORDER BY ${position} DESC LIMIT ?`,
+          )
+          .all(owner, kind, query.before, query.limit + 1)
+      : this.db
+          .prepare(
+            `SELECT payload, ${position} AS position FROM records
+             WHERE owner = ? AND kind = ?
+             ORDER BY ${position} DESC LIMIT ?`,
+          )
+          .all(owner, kind, query.limit + 1);
+    const hasNext = rows.length > query.limit;
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((row) => JSON.parse(String(row.payload)) as T),
+      ...(hasNext && last ? { nextPosition: String(last.position) } : {}),
+    };
   }
 }

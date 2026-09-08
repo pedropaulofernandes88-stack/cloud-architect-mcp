@@ -388,9 +388,9 @@ describe('ArchitectureService', () => {
       applyOperationUpdate(running, {
         status: 'RUNNING',
         updatedAt: '2026-09-07T12:01:30.000Z',
-        executionArn: 'arn:execution',
+        stackId: 'arn:stack',
       }),
-    ).toMatchObject({ executionArn: 'arn:execution' });
+    ).toMatchObject({ stackId: 'arn:stack' });
     await repository.updateOperation(owner.ownerId, operation.id, {
       status: 'RUNNING',
       updatedAt: '2026-09-07T12:01:00.000Z',

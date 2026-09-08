@@ -116,9 +116,15 @@ export function applyOperationUpdate(operation: Operation, update: OperationUpda
   }
   const allowed =
     (operation.status === 'PENDING' &&
-      (update.status === 'RUNNING' || update.status === 'FAILED')) ||
+      (update.status === 'RUNNING' ||
+        update.status === 'FAILED' ||
+        update.status === 'NEEDS_ATTENTION')) ||
     (operation.status === 'RUNNING' &&
-      (update.status === 'SUCCEEDED' || update.status === 'FAILED'));
+      (update.status === 'SUCCEEDED' ||
+        update.status === 'FAILED' ||
+        update.status === 'NEEDS_ATTENTION')) ||
+    (operation.status === 'NEEDS_ATTENTION' &&
+      (update.status === 'RUNNING' || update.status === 'SUCCEEDED' || update.status === 'FAILED'));
   if (!allowed) throw new DomainError('CONFLICT', 'Transição de operação inválida.');
   return { ...operation, ...update };
 }

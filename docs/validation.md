@@ -36,8 +36,21 @@ Data: 7 de setembro de 2026. Ambiente local: Windows, Node.js 24.19.0, npm 11.17
 - O relógio do worker é injetável: o teste de rollback confirma a consulta efetiva à CloudFormation, separado do teste de prazo excedido.
 - As actions da CI foram fixadas por SHA e a validação CloudFormation foi incluída no pipeline.
 
+## Auditoria e evolução 0.3.0
+
+- `npm run check`: aprovado com **64 testes em 12 arquivos**, verificação de tipos e quatro bundles Lambda.
+- `npm run demo`: aprovado com nove ferramentas, MCP 2026-07-28, comparação de planos equivalentes com identidade física distinta, duas páginas de histórico e uma operação simulada idempotente.
+- `npm run synth` e `cfn-lint 1.56.0`: aprovados, mantendo apenas a exceção `W3005` no template CDK. O aviso JWT continua indicando valores de síntese offline.
+- `npm audit --omit=dev`: nenhuma vulnerabilidade reportada na consulta realizada.
+- Histórico em memória, SQLite e DynamoDB: testes de paginação, isolamento por proprietário, aprovação separada, resumos e falhas de leitura. Backfill: simulação sem escrita, atualização limitada aos atributos de índice e retomada por proprietário.
+- Comparação: definição versus nomes gerados, modificações reais, digest adulterado, limite de saída e dados excessivamente complexos.
+- Recuperação: consulta CloudFormation antes de interpretar o prazo, estado `NEEDS_ATTENTION`, evento de execução verificado, preservação de estados terminais e bloqueio de stack com tag de outra operação mesmo quando `stackId` já está persistido.
+- Auditoria independente posterior corrigiu a checagem de tag no polling, acrescentou espera progressiva com jitter ao `BatchGet` e tornou explícito o erro diante de entrada de índice inconsistente. Foi removido do contrato o campo opcional `executionArn`, que não era persistido; a identidade do workflow é verificada por `DescribeExecution`, state machine, nome e entrada.
+- `CITATION.cff`: validado contra o schema oficial CFF 1.2.0, com `jsonschema 4.26.0` em ambiente Python separado. `LICENSE` usa o texto Apache 2.0 obtido diretamente da Apache Software Foundation.
+- Antes da publicação: revisão dos arquivos rastreados, novos arquivos e dois commits anteriores sem indício de credenciais reais ou estado local versionado. As 340 linhas do único log CI anterior foram verificadas por padrões de credenciais sem candidatos. Não foi usado scanner especializado; essa verificação não constitui garantia absoluta de ausência de segredos.
+
 ## Limites da evidência
 
-Não foram executados deploy, bootstrap, chamadas mutáveis AWS, testes com DynamoDB/Streams reais, autenticação real do provedor JWT ou provisionamento CloudFormation em conta sandbox. Testes dos adapters AWS usam clientes controlados. A síntese valida a montagem da infraestrutura, não prova a autorização IAM nem o comportamento real dos serviços.
+Não foram executados deploy, bootstrap, chamadas mutáveis AWS, testes com DynamoDB/Streams/EventBridge reais, autenticação real do provedor JWT ou provisionamento CloudFormation em conta sandbox. Testes dos adapters AWS usam clientes controlados. A síntese valida a montagem da infraestrutura, não prova a autorização IAM nem o comportamento real dos serviços. Entrega de eventos, throttling, propagação do índice e reconciliação devem ser exercitados na sandbox.
 
 Não houve benchmark, cálculo de custo nem teste de capacidade. O status de entrega é **implementado com validações AWS pendentes**.

@@ -1,7 +1,13 @@
 {
   "name": "cloud-architect-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
+  "license": "Apache-2.0",
+  "author": "pedropaulofernandes88-stack",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedropaulofernandes88-stack/cloud-architect-mcp.git"
+  },
   "description": "Planejamento e provisionamento AWS por MCP stateless, com aprovação e execução durável.",
   "type": "module",
   "engines": {
@@ -21,7 +27,9 @@
     "format:check": "prettier --check .",
     "client": "tsx scripts/client.ts",
     "pretest": "npm run build",
-    "export:templates": "tsx scripts/export-templates.ts"
+    "export:templates": "tsx scripts/export-templates.ts",
+    "reconcile": "tsx src/cli/reconcile.ts",
+    "backfill:history": "tsx src/cli/backfill-history.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1127.0",

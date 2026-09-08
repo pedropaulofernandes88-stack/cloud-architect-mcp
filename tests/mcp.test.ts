@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -49,6 +50,92 @@ async function modernClient(
 }
 
 describe('MCP 2026-07-28', () => {
+  it('pagina o histórico e compara planos por chamadas oficiais sem sessão', async () => {
+    const repository = new MemoryRepository();
+    const instance = new ArchitectureService(repository, {
+      region: 'us-east-1',
+      id: randomUUID,
+    });
+    const client = await modernClient(createMcpEndpoint(instance, fullPrincipal));
+    const planned = [];
+    for (let index = 0; index < 2; index += 1) {
+      const result = await client.callTool({
+        name: 'plan_architecture',
+        arguments: { name: 'compare-storage', blueprint: 'storage', environment: 'dev' },
+      });
+      expect(result.isError).not.toBe(true);
+      planned.push(result.structuredContent as { id: string; digest: string });
+    }
+    const first = planned[0]!;
+    const second = planned[1]!;
+    const comparison = await client.callTool({
+      name: 'compare_plans',
+      arguments: { leftPlanId: first.id, rightPlanId: second.id },
+    });
+    expect(comparison.isError).not.toBe(true);
+    expect(comparison.structuredContent).toMatchObject({
+      sameDefinition: true,
+      before: { integrity: true },
+      after: { integrity: true },
+      changes: { physicalIdentity: { createsDistinctStack: true } },
+    });
+    const reader = await modernClient(createMcpEndpoint(instance, fullPrincipal));
+    const page = await reader.callTool({ name: 'list_plans', arguments: { limit: 1 } });
+    const firstPage = page.structuredContent as {
+      items: Array<{ id: string }>;
+      nextCursor: string;
+    };
+    expect(page.isError).not.toBe(true);
+    expect(firstPage.items).toHaveLength(1);
+    expect(firstPage.items[0]).not.toHaveProperty('template');
+    expect(firstPage.items[0]).not.toHaveProperty('ownerId');
+    expect(firstPage.nextCursor).toBeTypeOf('string');
+    const next = await reader.callTool({
+      name: 'list_plans',
+      arguments: { limit: 1, cursor: firstPage.nextCursor },
+    });
+    const nextPage = next.structuredContent as {
+      items: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(next.isError).not.toBe(true);
+    expect(nextPage.items).toHaveLength(1);
+    expect(nextPage.nextCursor).toBeUndefined();
+    expect(new Set([...firstPage.items, ...nextPage.items].map((item) => item.id))).toEqual(
+      new Set([first.id, second.id]),
+    );
+    await repository.approvePlan(
+      fullPrincipal.ownerId,
+      first.id,
+      first.digest,
+      'test-reviewer',
+      new Date().toISOString(),
+    );
+    const applied = await client.callTool({
+      name: 'apply_architecture',
+      arguments: { planId: first.id, digest: first.digest, idempotencyKey: 'history-apply' },
+    });
+    expect(applied.isError).not.toBe(true);
+    const history = await reader.callTool({ name: 'list_operations', arguments: {} });
+    expect(history.isError).not.toBe(true);
+    expect(history.structuredContent).toMatchObject({
+      items: [{ planId: first.id, status: 'PENDING' }],
+    });
+    const foreign = await modernClient(
+      createMcpEndpoint(instance, { ownerId: 'owner-b', scopes: ['architecture:read'] }),
+    );
+    const foreignPage = await foreign.callTool({
+      name: 'list_plans',
+      arguments: { cursor: firstPage.nextCursor },
+    });
+    expect(foreignPage.isError).toBe(true);
+    const foreignComparison = await foreign.callTool({
+      name: 'compare_plans',
+      arguments: { leftPlanId: first.id, rightPlanId: second.id },
+    });
+    expect(foreignComparison.isError).toBe(true);
+  });
+
   it('usa o cliente v2 sem initialize/sessão e expõe as ferramentas do servidor', async () => {
     const seenRequests: Request[] = [];
     const client = await modernClient(createMcpEndpoint(service(), fullPrincipal), seenRequests);
@@ -57,9 +144,12 @@ describe('MCP 2026-07-28', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
       'apply_architecture',
+      'compare_plans',
       'get_operation',
       'get_plan',
       'list_blueprints',
+      'list_operations',
+      'list_plans',
       'plan_architecture',
       'validate_plan',
     ]);

@@ -143,6 +143,7 @@ describe('AWS adapters', () => {
       repository,
       executionRoleArn: 'arn:aws:iam::111111111111:role/camcp-execution',
       region: 'sa-east-1',
+      now: () => new Date(now),
       cloudFormation: {
         send: async (command: unknown) => {
           commands.push(command);
@@ -226,7 +227,12 @@ describe('AWS adapters', () => {
           expect(command).toBeInstanceOf(DescribeStacksCommand);
           return {
             Stacks: [
-              { StackId: 'stack-id', StackStatus: 'ROLLBACK_COMPLETE', StackStatusReason: 'bad' },
+              {
+                StackId: 'stack-id',
+                StackStatus: 'ROLLBACK_COMPLETE',
+                StackStatusReason: 'bad',
+                Tags: [{ Key: 'camcp:operationId', Value: queued.id }],
+              },
             ],
           };
         },
@@ -293,6 +299,8 @@ describe('AWS adapters', () => {
       updateOperation: async (_owner, _id, update) => {
         updated = { ...injected, ...update };
       },
+      listPlans: async () => ({ items: [] }),
+      listOperations: async () => ({ items: [] }),
     };
     const worker = createWorker({
       repository,
@@ -310,7 +318,7 @@ describe('AWS adapters', () => {
     ).resolves.toMatchObject({ status: 'FAILED' });
   });
 
-  it('marca deadline antes de consultar CloudFormation', async () => {
+  it('após o deadline consulta CloudFormation e marca in-progress como atenção necessária', async () => {
     const repository = new MemoryRepository();
     const approved = plan('APPROVED');
     await repository.putPlan(approved);
@@ -331,13 +339,100 @@ describe('AWS adapters', () => {
       executionRoleArn: 'role',
       now: () => new Date('2026-09-07T13:00:00.000Z'),
       cloudFormation: {
-        send: async () => {
-          throw new Error('não deve descrever');
-        },
+        send: async () => ({
+          Stacks: [
+            {
+              StackId: 'stack-id',
+              StackStatus: 'CREATE_IN_PROGRESS',
+              Tags: [{ Key: 'camcp:operationId', Value: operation.id }],
+            },
+          ],
+        }),
       },
     });
     await expect(
       worker({ action: 'poll', ownerId: 'owner', operationId: operation.id }),
-    ).resolves.toMatchObject({ status: 'FAILED', message: expect.stringContaining('55 minutos') });
+    ).resolves.toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      message: expect.stringContaining('após o prazo'),
+    });
+  });
+
+  it('após o deadline ainda reconhece CREATE_COMPLETE como sucesso', async () => {
+    const repository = new MemoryRepository();
+    const approved = plan('APPROVED');
+    await repository.putPlan(approved);
+    const operation = await repository.enqueueOperation(
+      'owner',
+      approved.id,
+      approved.digest,
+      'deadline-success',
+      now,
+    );
+    await repository.updateOperation('owner', operation.id, {
+      status: 'RUNNING',
+      updatedAt: now,
+      stackId: 'stack-id',
+    });
+    const worker = createWorker({
+      repository,
+      executionRoleArn: 'role',
+      now: () => new Date('2026-09-07T13:00:00.000Z'),
+      cloudFormation: {
+        send: async () => ({
+          Stacks: [
+            {
+              StackId: 'stack-id',
+              StackStatus: 'CREATE_COMPLETE',
+              Outputs: [],
+              Tags: [{ Key: 'camcp:operationId', Value: operation.id }],
+            },
+          ],
+        }),
+      },
+    });
+    await expect(
+      worker({ action: 'poll', ownerId: 'owner', operationId: operation.id }),
+    ).resolves.toMatchObject({ status: 'SUCCEEDED' });
+  });
+
+  it('não aceita stack de outra operação mesmo com stackId persistido', async () => {
+    const repository = new MemoryRepository();
+    const approved = plan('APPROVED');
+    await repository.putPlan(approved);
+    const operation = await repository.enqueueOperation(
+      'owner',
+      approved.id,
+      approved.digest,
+      'wrong-stack',
+      now,
+    );
+    await repository.updateOperation('owner', operation.id, {
+      status: 'RUNNING',
+      updatedAt: now,
+      stackId: 'stack-id',
+    });
+    const worker = createWorker({
+      repository,
+      executionRoleArn: 'role',
+      now: () => new Date(now),
+      cloudFormation: {
+        send: async () => ({
+          Stacks: [
+            {
+              StackId: 'stack-id',
+              StackStatus: 'CREATE_COMPLETE',
+              Tags: [{ Key: 'camcp:operationId', Value: 'op-other' }],
+            },
+          ],
+        }),
+      },
+    });
+    await expect(
+      worker({ action: 'poll', ownerId: 'owner', operationId: operation.id }),
+    ).resolves.toMatchObject({
+      status: 'NEEDS_ATTENTION',
+      message: expect.stringContaining('não pertence'),
+    });
   });
 });

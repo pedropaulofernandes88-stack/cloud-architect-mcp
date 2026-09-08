@@ -17,6 +17,20 @@ Você pede ao agente conectado: “Preciso de armazenamento privado e versionado
 
 Uma chamada repetida com a mesma chave de idempotência retorna a mesma operação. Se você quiser mudar a proposta, gere um novo plano, revise e aprove novamente.
 
+## Retomar e comparar propostas
+
+Use `list_plans` para localizar planos anteriores e `list_operations` para acompanhar as execuções. Ambos aceitam `{ "limit": 10 }`; se houver `nextCursor`, passe-o como `cursor` na próxima chamada. O cursor só vale para o mesmo proprietário e tipo de histórico. Na AWS, um registro recém-criado pode levar algum tempo para aparecer no índice.
+
+Preencha `examples/compare-plans.json` com dois IDs e execute:
+
+```sh
+npm run client -- --tool compare_plans --input examples/compare-plans.json
+```
+
+`sameDefinition: true` indica definição equivalente após normalizar a identidade gerada. Ainda assim, `createsDistinctStack: true` avisa que aplicar os dois planos criaria stacks diferentes. A comparação auxilia a revisão; a aprovação continua individual e vinculada ao digest de cada plano.
+
+`NEEDS_ATTENTION` significa que não há evidência suficiente para concluir o resultado da operação. Pode haver recursos reais em criação. A reconciliação administrativa consulta a CloudFormation e atualiza o registro sem iniciar provisionamento; veja [recuperação](deployment.md#recuperação).
+
 ## Aplicações disponíveis hoje
 
 | Necessidade                                      | Uso do MVP                                                      | O que ainda fica a cargo da aplicação                         |
